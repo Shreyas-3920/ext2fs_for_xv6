@@ -6,6 +6,9 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "ext2.h"
+#include "fs.h"
+
 
 struct {
   struct spinlock lock;
@@ -391,6 +394,7 @@ yield(void)
   release(&ptable.lock);
 }
 
+
 // A fork child's very first scheduling by scheduler()
 // will swtch here.  "Return" to user space.
 void
@@ -407,6 +411,7 @@ forkret(void)
     first = 0;
     iinit(ROOTDEV);
     initlog(ROOTDEV);
+    ext2_iinit(EXT2DEV);
   }
 
   // Return to "caller", actually trapret (see allocproc).

@@ -20,7 +20,7 @@
 #include "fs.h"
 #include "buf.h"
 #include "file.h"
-
+#include "ext2.h"
 #define min(a, b) ((a) < (b) ? (a) : (b))
 static void itrunc(struct inode*);
 // there should be one superblock per disk device, but we run with
@@ -37,6 +37,17 @@ readsb(int dev, struct superblock *sb)
   memmove(sb, bp->data, sizeof(*sb));
   brelse(bp);
 }
+
+void
+ext2_readsb(int dev, struct ext2_superblock *sb)
+{
+  struct buf *bp;
+
+  bp = bread(dev, 0);
+  memmove(sb, bp->data+1024, sizeof(*sb));
+  brelse(bp);
+}
+
 
 // Zero a block.
 static void
@@ -168,6 +179,7 @@ struct {
   struct inode inode[NINODE];
 } icache;
 
+
 void
 iinit(int dev)
 {
@@ -183,6 +195,16 @@ iinit(int dev)
  inodestart %d bmap start %d\n", sb.size, sb.nblocks,
           sb.ninodes, sb.nlog, sb.logstart, sb.inodestart,
           sb.bmapstart);
+}
+
+struct ext2_superblock exs;
+
+void ext2_iinit(int dev){
+	ext2_readsb(dev, &exs);
+  	cprintf("sb: magic %x icount = %d bcount = %d\n log block size  %d inodes per group  %d first inode %d \
+		inode size %d\n", exs.s_magic, exs.s_inodes_count, exs.s_blocks_count, \
+		exs.s_log_block_size, exs.s_inodes_per_group, exs.s_first_ino, exs.s_inode_size);
+
 }
 
 static struct inode* iget(uint dev, uint inum);
