@@ -2,6 +2,7 @@ struct buf;
 struct context;
 struct file;
 struct inode;
+struct inode_operations;
 struct pipe;
 struct proc;
 struct rtcdate;

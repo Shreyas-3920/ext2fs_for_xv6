@@ -27,6 +27,20 @@ static void itrunc(struct inode*);
 // only one device
 struct superblock sb; 
 
+struct inode_operations xv6_iops = {
+	iinit,
+	ialloc,
+	iupdate,
+	ilock,
+	iunlock,
+	iput,
+	readi,
+	writei,
+	namecmp,
+	dirlookup,
+	dirlink,
+};
+
 // Read the super block.
 void
 readsb(int dev, struct superblock *sb)
@@ -288,6 +302,7 @@ iget(uint dev, uint inum)
   ip->inum = inum;
   ip->ref = 1;
   ip->valid = 0;
+  ip->iops = &xv6_iops;
   release(&icache.lock);
 
   return ip;
@@ -362,7 +377,7 @@ iput(struct inode *ip)
       // inode has no links and no other references: truncate and free.
       itrunc(ip);
       ip->type = 0;
-      iupdate(ip);
+      ip->iops->iupdate(ip);
       ip->valid = 0;
     }
   }
@@ -377,8 +392,8 @@ iput(struct inode *ip)
 void
 iunlockput(struct inode *ip)
 {
-  iunlock(ip);
-  iput(ip);
+  ip->iops->iunlock(ip);
+  ip->iops->iput(ip);
 }
 
 //PAGEBREAK!
@@ -453,7 +468,7 @@ itrunc(struct inode *ip)
   }
 
   ip->size = 0;
-  iupdate(ip);
+  ip->iops->iupdate(ip);
 }
 
 // Copy stat information from inode.
@@ -527,7 +542,7 @@ writei(struct inode *ip, char *src, uint off, uint n)
 
   if(n > 0 && off > ip->size){
     ip->size = off;
-    iupdate(ip);
+    ip->iops->iupdate(ip);
   }
   return n;
 }
@@ -553,7 +568,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
     panic("dirlookup not DIR");
 
   for(off = 0; off < dp->size; off += sizeof(de)){
-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+    if(dp->iops->readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
     if(de.inum == 0)
       continue;
@@ -578,14 +593,14 @@ dirlink(struct inode *dp, char *name, uint inum)
   struct inode *ip;
 
   // Check that name is not present.
-  if((ip = dirlookup(dp, name, 0)) != 0){
-    iput(ip);
+  if((ip = dp->iops->dirlookup(dp, name, 0)) != 0){
+    ip->iops->iput(ip);
     return -1;
   }
 
   // Look for an empty dirent.
   for(off = 0; off < dp->size; off += sizeof(de)){
-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+    if(dp->iops->readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlink read");
     if(de.inum == 0)
       break;
@@ -593,7 +608,7 @@ dirlink(struct inode *dp, char *name, uint inum)
 
   strncpy(de.name, name, DIRSIZ);
   de.inum = inum;
-  if(writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+  if(dp->iops->writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
     panic("dirlink");
 
   return 0;
@@ -654,17 +669,17 @@ namex(char *path, int nameiparent, char *name)
     ip = idup(myproc()->cwd);
 
   while((path = skipelem(path, name)) != 0){
-    ilock(ip);
+    ip->iops->ilock(ip);
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
     if(nameiparent && *path == '\0'){
       // Stop one level early.
-      iunlock(ip);
+      ip->iops->iunlock(ip);
       return ip;
     }
-    if((next = dirlookup(ip, name, 0)) == 0){
+    if((next = ip->iops->dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
     }
@@ -672,7 +687,7 @@ namex(char *path, int nameiparent, char *name)
     ip = next;
   }
   if(nameiparent){
-    iput(ip);
+    ip->iops->iput(ip);
     return 0;
   }
   return ip;

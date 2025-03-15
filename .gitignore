@@ -4,7 +4,9 @@ _*
 *.d
 *.asm
 *.sym
+*.txt
 *.img
+cscope.out
 vectors.S
 bootblock
 entryother

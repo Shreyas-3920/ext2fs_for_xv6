@@ -130,7 +130,7 @@ sys_link(void)
     return -1;
   }
 
-  ilock(ip);
+  ip->iops->ilock(ip);
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
@@ -138,27 +138,27 @@ sys_link(void)
   }
 
   ip->nlink++;
-  iupdate(ip);
-  iunlock(ip);
+  ip->iops->iupdate(ip);
+  ip->iops->iunlock(ip);
 
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
-  ilock(dp);
-  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
+  dp->iops->ilock(dp);
+  if(dp->dev != ip->dev || dp->iops->dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
   }
   iunlockput(dp);
-  iput(ip);
+  dp->iops->iput(ip);
 
   end_op();
 
   return 0;
 
 bad:
-  ilock(ip);
+  ip->iops->ilock(ip);
   ip->nlink--;
-  iupdate(ip);
+  ip->iops->iupdate(ip);
   iunlockput(ip);
   end_op();
   return -1;
@@ -172,7 +172,7 @@ isdirempty(struct inode *dp)
   struct dirent de;
 
   for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+    if(dp->iops->readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
       panic("isdirempty: readi");
     if(de.inum != 0)
       return 0;
@@ -198,15 +198,15 @@ sys_unlink(void)
     return -1;
   }
 
-  ilock(dp);
+  dp->iops->ilock(dp);
 
   // Cannot unlink "." or "..".
-  if(namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
+  if(dp->iops->namecmp(name, ".") == 0 || dp->iops->namecmp(name, "..") == 0)
     goto bad;
 
-  if((ip = dirlookup(dp, name, &off)) == 0)
+  if((ip = dp->iops->dirlookup(dp, name, &off)) == 0)
     goto bad;
-  ilock(ip);
+  dp->iops->ilock(ip);
 
   if(ip->nlink < 1)
     panic("unlink: nlink < 1");
@@ -216,16 +216,16 @@ sys_unlink(void)
   }
 
   memset(&de, 0, sizeof(de));
-  if(writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+  if(dp->iops->writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
     panic("unlink: writei");
   if(ip->type == T_DIR){
     dp->nlink--;
-    iupdate(dp);
+    dp->iops->iupdate(dp);
   }
   iunlockput(dp);
 
   ip->nlink--;
-  iupdate(ip);
+  ip->iops->iupdate(ip);
   iunlockput(ip);
 
   end_op();
@@ -246,35 +246,35 @@ create(char *path, short type, short major, short minor)
 
   if((dp = nameiparent(path, name)) == 0)
     return 0;
-  ilock(dp);
+  dp->iops->ilock(dp);
 
-  if((ip = dirlookup(dp, name, 0)) != 0){
+  if((ip = dp->iops->dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
-    ilock(ip);
+    ip->iops->ilock(ip);
     if(type == T_FILE && ip->type == T_FILE)
       return ip;
     iunlockput(ip);
     return 0;
   }
 
-  if((ip = ialloc(dp->dev, type)) == 0)
+  if((ip = dp->iops->ialloc(dp->dev, type)) == 0)
     panic("create: ialloc");
 
-  ilock(ip);
+  ip->iops->ilock(ip);
   ip->major = major;
   ip->minor = minor;
   ip->nlink = 1;
-  iupdate(ip);
+  ip->iops->iupdate(ip);
 
   if(type == T_DIR){  // Create . and .. entries.
     dp->nlink++;  // for ".."
-    iupdate(dp);
+    dp->iops->iupdate(dp);
     // No ip->nlink++ for ".": avoid cyclic ref count.
-    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
+    if(ip->iops->dirlink(ip, ".", ip->inum) < 0 || ip->iops->dirlink(ip, "..", dp->inum) < 0)
       panic("create dots");
   }
 
-  if(dirlink(dp, name, ip->inum) < 0)
+  if(dp->iops->dirlink(dp, name, ip->inum) < 0)
     panic("create: dirlink");
 
   iunlockput(dp);
@@ -321,7 +321,7 @@ sys_open(void)
     end_op();
     return -1;
   }
-  iunlock(ip);
+  ip->iops->iunlock(ip);
   end_op();
 
   f->type = FD_INODE;
@@ -386,8 +386,8 @@ sys_chdir(void)
     end_op();
     return -1;
   }
-  iunlock(ip);
-  iput(curproc->cwd);
+  ip->iops->iunlock(ip);
+  curproc->cwd->iops->iput(curproc->cwd);
   end_op();
   curproc->cwd = ip;
   return 0;

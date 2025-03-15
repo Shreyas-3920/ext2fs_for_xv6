@@ -6,9 +6,10 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "ext2.h"
 #include "fs.h"
-
+#include "file.h"
 
 struct {
   struct spinlock lock;
@@ -246,7 +247,7 @@ exit(void)
   }
 
   begin_op();
-  iput(curproc->cwd);
+  curproc->cwd->iops->iput(curproc->cwd);
   end_op();
   curproc->cwd = 0;
 

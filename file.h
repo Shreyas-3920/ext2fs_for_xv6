@@ -8,6 +8,20 @@ struct file {
   uint off;
 };
 
+struct inode_operations {
+	void (*iinit)(int);
+	struct inode* (*ialloc)(uint, short);
+	void (*iupdate)(struct inode *);
+	void (*ilock)(struct inode *);
+	void (*iunlock)(struct inode *);
+	void (*iput)(struct inode *);
+	int (*readi)(struct inode *, char *, uint, uint);
+	int (*writei)(struct inode *, char *, uint, uint);
+	int (*namecmp)(const char *, const char *);
+	struct inode* (*dirlookup)(struct inode *, char *, uint *);
+	int (*dirlink)(struct inode *, char *, uint);
+	struct inode * (*namei)(char *);
+};
 
 // in-memory copy of an inode
 struct inode {
@@ -16,6 +30,7 @@ struct inode {
   int ref;            // Reference count
   struct sleeplock lock; // protects everything below here
   int valid;          // inode has been read from disk?
+  struct inode_operations *iops;
 
   short type;         // copy of disk inode
   short major;
