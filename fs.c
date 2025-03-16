@@ -26,6 +26,7 @@ static void itrunc(struct inode*);
 // there should be one superblock per disk device, but we run with
 // only one device
 struct superblock sb; 
+struct ext2_superblock exs;
 
 struct inode_operations xv6_iops = {
 	iinit,
@@ -39,6 +40,20 @@ struct inode_operations xv6_iops = {
 	namecmp,
 	dirlookup,
 	dirlink,
+};
+
+struct inode_operations ext2_iops = {
+	ext2_iinit,
+	ext2_ialloc,
+	ext2_iupdate,
+	ext2_ilock,
+	ext2_iunlock,
+	ext2_iput,
+	ext2_readi,
+	ext2_writei,
+	ext2_namecmp,
+	ext2_dirlookup,
+	ext2_dirlink,
 };
 
 // Read the super block.
@@ -102,6 +117,10 @@ balloc(uint dev)
   panic("balloc: out of blocks");
 }
 
+static uint ext2_balloc(uint dev){
+	return 0;
+}
+
 // Free a disk block.
 static void
 bfree(int dev, uint b)
@@ -117,6 +136,9 @@ bfree(int dev, uint b)
   bp->data[bi/8] &= ~m;
   log_write(bp);
   brelse(bp);
+}
+
+static void ext2_bfree(int dev, uint b){
 }
 
 // Inodes.
@@ -211,11 +233,9 @@ iinit(int dev)
           sb.bmapstart);
 }
 
-struct ext2_superblock exs;
-
 void ext2_iinit(int dev){
 	ext2_readsb(dev, &exs);
-  	cprintf("sb: magic %x icount = %d bcount = %d\n log block size  %d inodes per group  %d first inode %d \
+	cprintf("sb: magic %x icount = %d bcount = %d\n log block size  %d inodes per group  %d first inode %d \
 		inode size %d\n", exs.s_magic, exs.s_inodes_count, exs.s_blocks_count, \
 		exs.s_log_block_size, exs.s_inodes_per_group, exs.s_first_ino, exs.s_inode_size);
 
@@ -249,6 +269,10 @@ ialloc(uint dev, short type)
   panic("ialloc: no inodes");
 }
 
+struct inode *ext2_ialloc(uint dev, short type){
+	return 0;
+}
+
 // Copy a modified in-memory inode to disk.
 // Must be called after every change to an ip->xxx field
 // that lives on disk, since i-node cache is write-through.
@@ -269,6 +293,9 @@ iupdate(struct inode *ip)
   memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
   log_write(bp);
   brelse(bp);
+}
+
+void ext2_iupdate(struct inode *ip){
 }
 
 // Find the inode with number inum on device dev
@@ -302,7 +329,10 @@ iget(uint dev, uint inum)
   ip->inum = inum;
   ip->ref = 1;
   ip->valid = 0;
-  ip->iops = &xv6_iops;
+  if(dev == ROOTDEV)
+  	ip->iops = &xv6_iops;
+  else if(dev == EXT2DEV) 
+	ip->iops = &ext2_iops;
   release(&icache.lock);
 
   return ip;
@@ -348,6 +378,9 @@ ilock(struct inode *ip)
   }
 }
 
+void ext2_ilock(struct inode *ip){
+}
+
 // Unlock the given inode.
 void
 iunlock(struct inode *ip)
@@ -356,6 +389,9 @@ iunlock(struct inode *ip)
     panic("iunlock");
 
   releasesleep(&ip->lock);
+}
+
+void ext2_iunlock(struct inode *ip){
 }
 
 // Drop a reference to an in-memory inode.
@@ -386,6 +422,9 @@ iput(struct inode *ip)
   acquire(&icache.lock);
   ip->ref--;
   release(&icache.lock);
+}
+
+void ext2_iput(struct inode *ip){
 }
 
 // Common idiom: unlock, then put.
@@ -436,6 +475,10 @@ bmap(struct inode *ip, uint bn)
   panic("bmap: out of range");
 }
 
+static uint ext2_bmap(struct inode *ip, uint bn){
+	return 0;
+}
+
 // Truncate inode (discard contents).
 // Only called when the inode has no links
 // to it (no directory entries referring to it)
@@ -469,6 +512,9 @@ itrunc(struct inode *ip)
 
   ip->size = 0;
   ip->iops->iupdate(ip);
+}
+
+static void ext2_itrunc(struct inode *ip){
 }
 
 // Copy stat information from inode.
@@ -512,6 +558,10 @@ readi(struct inode *ip, char *dst, uint off, uint n)
   return n;
 }
 
+int ext2_readi(struct inode *ip, char *dst, uint off, uint n){
+	return 0;
+}
+
 // PAGEBREAK!
 // Write data to inode.
 // Caller must hold ip->lock.
@@ -547,6 +597,10 @@ writei(struct inode *ip, char *src, uint off, uint n)
   return n;
 }
 
+int ext2_writei(struct inode *ip, char *src, uint off, uint n){
+	return 0;
+}
+
 //PAGEBREAK!
 // Directories
 
@@ -554,6 +608,10 @@ int
 namecmp(const char *s, const char *t)
 {
   return strncmp(s, t, DIRSIZ);
+}
+
+int ext2_namecmp(const char *s, const char *t){
+	return 0;
 }
 
 // Look for a directory entry in a directory.
@@ -582,6 +640,10 @@ dirlookup(struct inode *dp, char *name, uint *poff)
   }
 
   return 0;
+}
+
+struct inode* ext2_dirlookup(struct inode *dp, char *name, uint *poff){
+	return 0;
 }
 
 // Write a new directory entry (name, inum) into the directory dp.
@@ -614,6 +676,9 @@ dirlink(struct inode *dp, char *name, uint inum)
   return 0;
 }
 
+int ext2_dirlink(struct inode *dp, char *name, uint inum){
+	return 0;
+}
 //PAGEBREAK!
 // Paths
 

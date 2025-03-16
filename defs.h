@@ -10,6 +10,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct ext2_superblock;
 
 // bio.c
 void            binit(void);
@@ -36,7 +37,7 @@ int             filestat(struct file*, struct stat*);
 int             filewrite(struct file*, char*, int n);
 
 // fs.c
-void            readsb(int dev, struct superblock *sb);
+void            readsb(int, struct superblock *);
 int             dirlink(struct inode*, char*, uint);
 struct inode*   dirlookup(struct inode*, char*, uint*);
 struct inode*   ialloc(uint, short);
@@ -53,7 +54,19 @@ struct inode*   nameiparent(char*, char*);
 int             readi(struct inode*, char*, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, char*, uint, uint);
+void            ext2_readsb(int, struct ext2_superblock *);
 void		ext2_iinit(int dev);
+struct inode* 	ext2_ialloc(uint, short);
+void 		ext2_iupdate(struct inode *);
+void 		ext2_ilock(struct inode *);
+void 		ext2_iunlock(struct inode *);
+void 		ext2_iput(struct inode *);
+int 		ext2_readi(struct inode *, char *, uint, uint);
+int 		ext2_writei(struct inode *, char *, uint, uint);
+int 		ext2_namecmp(const char *, const char *);
+struct inode* 	ext2_dirlookup(struct inode *, char *, uint *);
+int 		ext2_dirlink(struct inode *, char *, uint);
+struct inode * 	ext2_namei(char *);
 
 // ide.c
 void            ideinit(void);

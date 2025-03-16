@@ -7,6 +7,7 @@ _*
 *.txt
 *.img
 cscope.out
+tags
 vectors.S
 bootblock
 entryother
