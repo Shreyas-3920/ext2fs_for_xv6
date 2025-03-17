@@ -29,7 +29,6 @@ struct superblock sb;
 struct ext2_superblock exs;
 
 struct inode_operations xv6_iops = {
-	iinit,
 	ialloc,
 	iupdate,
 	ilock,
@@ -43,7 +42,6 @@ struct inode_operations xv6_iops = {
 };
 
 struct inode_operations ext2_iops = {
-	ext2_iinit,
 	ext2_ialloc,
 	ext2_iupdate,
 	ext2_ilock,

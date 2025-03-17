@@ -9,7 +9,6 @@ struct file {
 };
 
 struct inode_operations {
-	void (*iinit)(int);
 	struct inode* (*ialloc)(uint, short);
 	void (*iupdate)(struct inode *);
 	void (*ilock)(struct inode *);
