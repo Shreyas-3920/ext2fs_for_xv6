@@ -1,0 +1,721 @@
+diff --git a/.gitignore b/.gitignore
+index 3e2c9de..0f5db6d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,7 +4,10 @@ _*
+ *.d
+ *.asm
+ *.sym
++*.txt
+ *.img
++cscope.out
++tags
+ vectors.S
+ bootblock
+ entryother
+diff --git a/console.c b/console.c
+index a280d2b..7d2bbf7 100644
+--- a/console.c
++++ b/console.c
+@@ -238,14 +238,14 @@ consoleread(struct inode *ip, char *dst, int n)
+   uint target;
+   int c;
+ 
+-  iunlock(ip);
++  ip->iops->iunlock(ip);
+   target = n;
+   acquire(&cons.lock);
+   while(n > 0){
+     while(input.r == input.w){
+       if(myproc()->killed){
+         release(&cons.lock);
+-        ilock(ip);
++        ip->iops->ilock(ip);
+         return -1;
+       }
+       sleep(&input.r, &cons.lock);
+@@ -265,7 +265,7 @@ consoleread(struct inode *ip, char *dst, int n)
+       break;
+   }
+   release(&cons.lock);
+-  ilock(ip);
++  ip->iops->ilock(ip);
+ 
+   return target - n;
+ }
+@@ -275,12 +275,12 @@ consolewrite(struct inode *ip, char *buf, int n)
+ {
+   int i;
+ 
+-  iunlock(ip);
++  ip->iops->iunlock(ip);
+   acquire(&cons.lock);
+   for(i = 0; i < n; i++)
+     consputc(buf[i] & 0xff);
+   release(&cons.lock);
+-  ilock(ip);
++  ip->iops->ilock(ip);
+ 
+   return n;
+ }
+diff --git a/defs.h b/defs.h
+index 8692359..0b3b54d 100644
+--- a/defs.h
++++ b/defs.h
+@@ -2,6 +2,7 @@ struct buf;
+ struct context;
+ struct file;
+ struct inode;
++struct inode_operations;
+ struct pipe;
+ struct proc;
+ struct rtcdate;
+@@ -9,6 +10,7 @@ struct spinlock;
+ struct sleeplock;
+ struct stat;
+ struct superblock;
++struct ext2_superblock;
+ 
+ // bio.c
+ void            binit(void);
+@@ -35,7 +37,7 @@ int             filestat(struct file*, struct stat*);
+ int             filewrite(struct file*, char*, int n);
+ 
+ // fs.c
+-void            readsb(int dev, struct superblock *sb);
++void            readsb(int, struct superblock *);
+ int             dirlink(struct inode*, char*, uint);
+ struct inode*   dirlookup(struct inode*, char*, uint*);
+ struct inode*   ialloc(uint, short);
+@@ -52,7 +54,19 @@ struct inode*   nameiparent(char*, char*);
+ int             readi(struct inode*, char*, uint, uint);
+ void            stati(struct inode*, struct stat*);
+ int             writei(struct inode*, char*, uint, uint);
++void            ext2_readsb(int, struct ext2_superblock *);
+ void		ext2_iinit(int dev);
++struct inode* 	ext2_ialloc(uint, short);
++void 		ext2_iupdate(struct inode *);
++void 		ext2_ilock(struct inode *);
++void 		ext2_iunlock(struct inode *);
++void 		ext2_iput(struct inode *);
++int 		ext2_readi(struct inode *, char *, uint, uint);
++int 		ext2_writei(struct inode *, char *, uint, uint);
++int 		ext2_namecmp(const char *, const char *);
++struct inode* 	ext2_dirlookup(struct inode *, char *, uint *);
++int 		ext2_dirlink(struct inode *, char *, uint);
++struct inode * 	ext2_namei(char *);
+ 
+ // ide.c
+ void            ideinit(void);
+diff --git a/exec.c b/exec.c
+index b40134f..f085110 100644
+--- a/exec.c
++++ b/exec.c
+@@ -6,6 +6,10 @@
+ #include "defs.h"
+ #include "x86.h"
+ #include "elf.h"
++#include "spinlock.h"
++#include "sleeplock.h"
++#include "fs.h"
++#include "file.h"
+ 
+ int
+ exec(char *path, char **argv)
+@@ -26,11 +30,11 @@ exec(char *path, char **argv)
+     cprintf("exec: fail\n");
+     return -1;
+   }
+-  ilock(ip);
++  ip->iops->ilock(ip);
+   pgdir = 0;
+ 
+   // Check ELF header
+-  if(readi(ip, (char*)&elf, 0, sizeof(elf)) != sizeof(elf))
++  if(ip->iops->readi(ip, (char*)&elf, 0, sizeof(elf)) != sizeof(elf))
+     goto bad;
+   if(elf.magic != ELF_MAGIC)
+     goto bad;
+@@ -41,7 +45,7 @@ exec(char *path, char **argv)
+   // Load program into memory.
+   sz = 0;
+   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
+-    if(readi(ip, (char*)&ph, off, sizeof(ph)) != sizeof(ph))
++    if(ip->iops->readi(ip, (char*)&ph, off, sizeof(ph)) != sizeof(ph))
+       goto bad;
+     if(ph.type != ELF_PROG_LOAD)
+       continue;
+diff --git a/file.c b/file.c
+index 24b32c2..73709e0 100644
+--- a/file.c
++++ b/file.c
+@@ -84,9 +84,9 @@ int
+ filestat(struct file *f, struct stat *st)
+ {
+   if(f->type == FD_INODE){
+-    ilock(f->ip);
++    f->ip->iops->ilock(f->ip);
+     stati(f->ip, st);
+-    iunlock(f->ip);
++    f->ip->iops->iunlock(f->ip);
+     return 0;
+   }
+   return -1;
+@@ -103,10 +103,10 @@ fileread(struct file *f, char *addr, int n)
+   if(f->type == FD_PIPE)
+     return piperead(f->pipe, addr, n);
+   if(f->type == FD_INODE){
+-    ilock(f->ip);
+-    if((r = readi(f->ip, addr, f->off, n)) > 0)
++    f->ip->iops->ilock(f->ip);
++    if((r = f->ip->iops->readi(f->ip, addr, f->off, n)) > 0)
+       f->off += r;
+-    iunlock(f->ip);
++    f->ip->iops->iunlock(f->ip);
+     return r;
+   }
+   panic("fileread");
+@@ -138,10 +138,10 @@ filewrite(struct file *f, char *addr, int n)
+         n1 = max;
+ 
+       begin_op();
+-      ilock(f->ip);
+-      if ((r = writei(f->ip, addr + i, f->off, n1)) > 0)
++      f->ip->iops->ilock(f->ip);
++      if ((r = f->ip->iops->writei(f->ip, addr + i, f->off, n1)) > 0)
+         f->off += r;
+-      iunlock(f->ip);
++      f->ip->iops->iunlock(f->ip);
+       end_op();
+ 
+       if(r < 0)
+diff --git a/file.h b/file.h
+index 0990c82..c6d1930 100644
+--- a/file.h
++++ b/file.h
+@@ -8,6 +8,19 @@ struct file {
+   uint off;
+ };
+ 
++struct inode_operations {
++	struct inode* (*ialloc)(uint, short);
++	void (*iupdate)(struct inode *);
++	void (*ilock)(struct inode *);
++	void (*iunlock)(struct inode *);
++	void (*iput)(struct inode *);
++	int (*readi)(struct inode *, char *, uint, uint);
++	int (*writei)(struct inode *, char *, uint, uint);
++	int (*namecmp)(const char *, const char *);
++	struct inode* (*dirlookup)(struct inode *, char *, uint *);
++	int (*dirlink)(struct inode *, char *, uint);
++	struct inode * (*namei)(char *);
++};
+ 
+ // in-memory copy of an inode
+ struct inode {
+@@ -16,6 +29,7 @@ struct inode {
+   int ref;            // Reference count
+   struct sleeplock lock; // protects everything below here
+   int valid;          // inode has been read from disk?
++  struct inode_operations *iops;
+ 
+   short type;         // copy of disk inode
+   short major;
+diff --git a/fs.c b/fs.c
+index c161a0d..55486ab 100644
+--- a/fs.c
++++ b/fs.c
+@@ -26,6 +26,33 @@ static void itrunc(struct inode*);
+ // there should be one superblock per disk device, but we run with
+ // only one device
+ struct superblock sb; 
++struct ext2_superblock exs;
++
++struct inode_operations xv6_iops = {
++	ialloc,
++	iupdate,
++	ilock,
++	iunlock,
++	iput,
++	readi,
++	writei,
++	namecmp,
++	dirlookup,
++	dirlink,
++};
++
++struct inode_operations ext2_iops = {
++	ext2_ialloc,
++	ext2_iupdate,
++	ext2_ilock,
++	ext2_iunlock,
++	ext2_iput,
++	ext2_readi,
++	ext2_writei,
++	ext2_namecmp,
++	ext2_dirlookup,
++	ext2_dirlink,
++};
+ 
+ // Read the super block.
+ void
+@@ -88,6 +115,10 @@ balloc(uint dev)
+   panic("balloc: out of blocks");
+ }
+ 
++static uint ext2_balloc(uint dev){
++	return 0;
++}
++
+ // Free a disk block.
+ static void
+ bfree(int dev, uint b)
+@@ -105,6 +136,9 @@ bfree(int dev, uint b)
+   brelse(bp);
+ }
+ 
++static void ext2_bfree(int dev, uint b){
++}
++
+ // Inodes.
+ //
+ // An inode describes a single unnamed file.
+@@ -197,11 +231,9 @@ iinit(int dev)
+           sb.bmapstart);
+ }
+ 
+-struct ext2_superblock exs;
+-
+ void ext2_iinit(int dev){
+ 	ext2_readsb(dev, &exs);
+-  	cprintf("sb: magic %x icount = %d bcount = %d\n log block size  %d inodes per group  %d first inode %d \
++	cprintf("sb: magic %x icount = %d bcount = %d\n log block size  %d inodes per group  %d first inode %d \
+ 		inode size %d\n", exs.s_magic, exs.s_inodes_count, exs.s_blocks_count, \
+ 		exs.s_log_block_size, exs.s_inodes_per_group, exs.s_first_ino, exs.s_inode_size);
+ 
+@@ -235,6 +267,10 @@ ialloc(uint dev, short type)
+   panic("ialloc: no inodes");
+ }
+ 
++struct inode *ext2_ialloc(uint dev, short type){
++	return 0;
++}
++
+ // Copy a modified in-memory inode to disk.
+ // Must be called after every change to an ip->xxx field
+ // that lives on disk, since i-node cache is write-through.
+@@ -257,6 +293,9 @@ iupdate(struct inode *ip)
+   brelse(bp);
+ }
+ 
++void ext2_iupdate(struct inode *ip){
++}
++
+ // Find the inode with number inum on device dev
+ // and return the in-memory copy. Does not lock
+ // the inode and does not read it from disk.
+@@ -288,6 +327,10 @@ iget(uint dev, uint inum)
+   ip->inum = inum;
+   ip->ref = 1;
+   ip->valid = 0;
++  if(dev == ROOTDEV)
++  	ip->iops = &xv6_iops;
++  else if(dev == EXT2DEV) 
++	ip->iops = &ext2_iops;
+   release(&icache.lock);
+ 
+   return ip;
+@@ -333,6 +376,9 @@ ilock(struct inode *ip)
+   }
+ }
+ 
++void ext2_ilock(struct inode *ip){
++}
++
+ // Unlock the given inode.
+ void
+ iunlock(struct inode *ip)
+@@ -343,6 +389,9 @@ iunlock(struct inode *ip)
+   releasesleep(&ip->lock);
+ }
+ 
++void ext2_iunlock(struct inode *ip){
++}
++
+ // Drop a reference to an in-memory inode.
+ // If that was the last reference, the inode cache entry can
+ // be recycled.
+@@ -362,7 +411,7 @@ iput(struct inode *ip)
+       // inode has no links and no other references: truncate and free.
+       itrunc(ip);
+       ip->type = 0;
+-      iupdate(ip);
++      ip->iops->iupdate(ip);
+       ip->valid = 0;
+     }
+   }
+@@ -373,12 +422,15 @@ iput(struct inode *ip)
+   release(&icache.lock);
+ }
+ 
++void ext2_iput(struct inode *ip){
++}
++
+ // Common idiom: unlock, then put.
+ void
+ iunlockput(struct inode *ip)
+ {
+-  iunlock(ip);
+-  iput(ip);
++  ip->iops->iunlock(ip);
++  ip->iops->iput(ip);
+ }
+ 
+ //PAGEBREAK!
+@@ -421,6 +473,10 @@ bmap(struct inode *ip, uint bn)
+   panic("bmap: out of range");
+ }
+ 
++static uint ext2_bmap(struct inode *ip, uint bn){
++	return 0;
++}
++
+ // Truncate inode (discard contents).
+ // Only called when the inode has no links
+ // to it (no directory entries referring to it)
+@@ -453,7 +509,10 @@ itrunc(struct inode *ip)
+   }
+ 
+   ip->size = 0;
+-  iupdate(ip);
++  ip->iops->iupdate(ip);
++}
++
++static void ext2_itrunc(struct inode *ip){
+ }
+ 
+ // Copy stat information from inode.
+@@ -497,6 +556,10 @@ readi(struct inode *ip, char *dst, uint off, uint n)
+   return n;
+ }
+ 
++int ext2_readi(struct inode *ip, char *dst, uint off, uint n){
++	return 0;
++}
++
+ // PAGEBREAK!
+ // Write data to inode.
+ // Caller must hold ip->lock.
+@@ -527,11 +590,15 @@ writei(struct inode *ip, char *src, uint off, uint n)
+ 
+   if(n > 0 && off > ip->size){
+     ip->size = off;
+-    iupdate(ip);
++    ip->iops->iupdate(ip);
+   }
+   return n;
+ }
+ 
++int ext2_writei(struct inode *ip, char *src, uint off, uint n){
++	return 0;
++}
++
+ //PAGEBREAK!
+ // Directories
+ 
+@@ -541,6 +608,10 @@ namecmp(const char *s, const char *t)
+   return strncmp(s, t, DIRSIZ);
+ }
+ 
++int ext2_namecmp(const char *s, const char *t){
++	return 0;
++}
++
+ // Look for a directory entry in a directory.
+ // If found, set *poff to byte offset of entry.
+ struct inode*
+@@ -553,7 +624,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
+     panic("dirlookup not DIR");
+ 
+   for(off = 0; off < dp->size; off += sizeof(de)){
+-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
++    if(dp->iops->readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+       panic("dirlookup read");
+     if(de.inum == 0)
+       continue;
+@@ -569,6 +640,10 @@ dirlookup(struct inode *dp, char *name, uint *poff)
+   return 0;
+ }
+ 
++struct inode* ext2_dirlookup(struct inode *dp, char *name, uint *poff){
++	return 0;
++}
++
+ // Write a new directory entry (name, inum) into the directory dp.
+ int
+ dirlink(struct inode *dp, char *name, uint inum)
+@@ -578,14 +653,14 @@ dirlink(struct inode *dp, char *name, uint inum)
+   struct inode *ip;
+ 
+   // Check that name is not present.
+-  if((ip = dirlookup(dp, name, 0)) != 0){
+-    iput(ip);
++  if((ip = dp->iops->dirlookup(dp, name, 0)) != 0){
++    ip->iops->iput(ip);
+     return -1;
+   }
+ 
+   // Look for an empty dirent.
+   for(off = 0; off < dp->size; off += sizeof(de)){
+-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
++    if(dp->iops->readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+       panic("dirlink read");
+     if(de.inum == 0)
+       break;
+@@ -593,12 +668,15 @@ dirlink(struct inode *dp, char *name, uint inum)
+ 
+   strncpy(de.name, name, DIRSIZ);
+   de.inum = inum;
+-  if(writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
++  if(dp->iops->writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+     panic("dirlink");
+ 
+   return 0;
+ }
+ 
++int ext2_dirlink(struct inode *dp, char *name, uint inum){
++	return 0;
++}
+ //PAGEBREAK!
+ // Paths
+ 
+@@ -654,17 +732,17 @@ namex(char *path, int nameiparent, char *name)
+     ip = idup(myproc()->cwd);
+ 
+   while((path = skipelem(path, name)) != 0){
+-    ilock(ip);
++    ip->iops->ilock(ip);
+     if(ip->type != T_DIR){
+       iunlockput(ip);
+       return 0;
+     }
+     if(nameiparent && *path == '\0'){
+       // Stop one level early.
+-      iunlock(ip);
++      ip->iops->iunlock(ip);
+       return ip;
+     }
+-    if((next = dirlookup(ip, name, 0)) == 0){
++    if((next = ip->iops->dirlookup(ip, name, 0)) == 0){
+       iunlockput(ip);
+       return 0;
+     }
+@@ -672,7 +750,7 @@ namex(char *path, int nameiparent, char *name)
+     ip = next;
+   }
+   if(nameiparent){
+-    iput(ip);
++    ip->iops->iput(ip);
+     return 0;
+   }
+   return ip;
+diff --git a/fs.h b/fs.h
+index 3214f1d..7c0398b 100644
+--- a/fs.h
++++ b/fs.h
+@@ -3,7 +3,7 @@
+ 
+ 
+ #define ROOTINO 1  // root i-number
+-#define BSIZE 512  // block size
++#define BSIZE 2048  // block size
+ 
+ // Disk layout:
+ // [ boot block | super block | log | inode blocks |
+diff --git a/proc.c b/proc.c
+index eb56545..0f94578 100644
+--- a/proc.c
++++ b/proc.c
+@@ -6,9 +6,10 @@
+ #include "x86.h"
+ #include "proc.h"
+ #include "spinlock.h"
++#include "sleeplock.h"
+ #include "ext2.h"
+ #include "fs.h"
+-
++#include "file.h"
+ 
+ struct {
+   struct spinlock lock;
+@@ -246,7 +247,7 @@ exit(void)
+   }
+ 
+   begin_op();
+-  iput(curproc->cwd);
++  curproc->cwd->iops->iput(curproc->cwd);
+   end_op();
+   curproc->cwd = 0;
+ 
+diff --git a/sysfile.c b/sysfile.c
+index bfe61b7..6809124 100644
+--- a/sysfile.c
++++ b/sysfile.c
+@@ -130,7 +130,7 @@ sys_link(void)
+     return -1;
+   }
+ 
+-  ilock(ip);
++  ip->iops->ilock(ip);
+   if(ip->type == T_DIR){
+     iunlockput(ip);
+     end_op();
+@@ -138,27 +138,27 @@ sys_link(void)
+   }
+ 
+   ip->nlink++;
+-  iupdate(ip);
+-  iunlock(ip);
++  ip->iops->iupdate(ip);
++  ip->iops->iunlock(ip);
+ 
+   if((dp = nameiparent(new, name)) == 0)
+     goto bad;
+-  ilock(dp);
+-  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
++  dp->iops->ilock(dp);
++  if(dp->dev != ip->dev || dp->iops->dirlink(dp, name, ip->inum) < 0){
+     iunlockput(dp);
+     goto bad;
+   }
+   iunlockput(dp);
+-  iput(ip);
++  dp->iops->iput(ip);
+ 
+   end_op();
+ 
+   return 0;
+ 
+ bad:
+-  ilock(ip);
++  ip->iops->ilock(ip);
+   ip->nlink--;
+-  iupdate(ip);
++  ip->iops->iupdate(ip);
+   iunlockput(ip);
+   end_op();
+   return -1;
+@@ -172,7 +172,7 @@ isdirempty(struct inode *dp)
+   struct dirent de;
+ 
+   for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
+-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
++    if(dp->iops->readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+       panic("isdirempty: readi");
+     if(de.inum != 0)
+       return 0;
+@@ -198,15 +198,15 @@ sys_unlink(void)
+     return -1;
+   }
+ 
+-  ilock(dp);
++  dp->iops->ilock(dp);
+ 
+   // Cannot unlink "." or "..".
+-  if(namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
++  if(dp->iops->namecmp(name, ".") == 0 || dp->iops->namecmp(name, "..") == 0)
+     goto bad;
+ 
+-  if((ip = dirlookup(dp, name, &off)) == 0)
++  if((ip = dp->iops->dirlookup(dp, name, &off)) == 0)
+     goto bad;
+-  ilock(ip);
++  dp->iops->ilock(ip);
+ 
+   if(ip->nlink < 1)
+     panic("unlink: nlink < 1");
+@@ -216,16 +216,16 @@ sys_unlink(void)
+   }
+ 
+   memset(&de, 0, sizeof(de));
+-  if(writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
++  if(dp->iops->writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+     panic("unlink: writei");
+   if(ip->type == T_DIR){
+     dp->nlink--;
+-    iupdate(dp);
++    dp->iops->iupdate(dp);
+   }
+   iunlockput(dp);
+ 
+   ip->nlink--;
+-  iupdate(ip);
++  ip->iops->iupdate(ip);
+   iunlockput(ip);
+ 
+   end_op();
+@@ -246,35 +246,35 @@ create(char *path, short type, short major, short minor)
+ 
+   if((dp = nameiparent(path, name)) == 0)
+     return 0;
+-  ilock(dp);
++  dp->iops->ilock(dp);
+ 
+-  if((ip = dirlookup(dp, name, 0)) != 0){
++  if((ip = dp->iops->dirlookup(dp, name, 0)) != 0){
+     iunlockput(dp);
+-    ilock(ip);
++    ip->iops->ilock(ip);
+     if(type == T_FILE && ip->type == T_FILE)
+       return ip;
+     iunlockput(ip);
+     return 0;
+   }
+ 
+-  if((ip = ialloc(dp->dev, type)) == 0)
++  if((ip = dp->iops->ialloc(dp->dev, type)) == 0)
+     panic("create: ialloc");
+ 
+-  ilock(ip);
++  ip->iops->ilock(ip);
+   ip->major = major;
+   ip->minor = minor;
+   ip->nlink = 1;
+-  iupdate(ip);
++  ip->iops->iupdate(ip);
+ 
+   if(type == T_DIR){  // Create . and .. entries.
+     dp->nlink++;  // for ".."
+-    iupdate(dp);
++    dp->iops->iupdate(dp);
+     // No ip->nlink++ for ".": avoid cyclic ref count.
+-    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
++    if(ip->iops->dirlink(ip, ".", ip->inum) < 0 || ip->iops->dirlink(ip, "..", dp->inum) < 0)
+       panic("create dots");
+   }
+ 
+-  if(dirlink(dp, name, ip->inum) < 0)
++  if(dp->iops->dirlink(dp, name, ip->inum) < 0)
+     panic("create: dirlink");
+ 
+   iunlockput(dp);
+@@ -321,7 +321,7 @@ sys_open(void)
+     end_op();
+     return -1;
+   }
+-  iunlock(ip);
++  ip->iops->iunlock(ip);
+   end_op();
+ 
+   f->type = FD_INODE;
+@@ -386,8 +386,8 @@ sys_chdir(void)
+     end_op();
+     return -1;
+   }
+-  iunlock(ip);
+-  iput(curproc->cwd);
++  ip->iops->iunlock(ip);
++  curproc->cwd->iops->iput(curproc->cwd);
+   end_op();
+   curproc->cwd = ip;
+   return 0;

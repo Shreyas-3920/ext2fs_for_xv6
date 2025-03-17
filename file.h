@@ -19,7 +19,6 @@ struct inode_operations {
 	int (*namecmp)(const char *, const char *);
 	struct inode* (*dirlookup)(struct inode *, char *, uint *);
 	int (*dirlink)(struct inode *, char *, uint);
-	struct inode * (*namei)(char *);
 };
 
 // in-memory copy of an inode
